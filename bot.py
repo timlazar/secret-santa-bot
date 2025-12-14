@@ -12,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 5220438670
 
-# В Render лучше хранить БД на диске: /var/data/santa.db
+# На Render лучше хранить на диске: /var/data/santa.db
 DB_PATH = os.getenv("DB_PATH", "santa.db")
 
 bot = Bot(token=TOKEN)
@@ -59,7 +59,9 @@ def set_wish(user_id: int, wish: str):
 
 def get_participants() -> list[tuple[int, str, str]]:
     with db() as conn:
-        cur = conn.execute("SELECT user_id, name, COALESCE(wish,'') FROM participants ORDER BY name")
+        cur = conn.execute(
+            "SELECT user_id, name, COALESCE(wish,'') FROM participants ORDER BY name"
+        )
         return cur.fetchall()
 
 
@@ -85,13 +87,27 @@ def save_assignments(pairs: dict[int, int]):
 
 def get_wish(user_id: int) -> str:
     with db() as conn:
-        cur = conn.execute("SELECT COALESCE(wish,'') FROM participants WHERE user_id=?", (user_id,))
+        cur = conn.execute(
+            "SELECT COALESCE(wish,'') FROM participants WHERE user_id=?",
+            (user_id,)
+        )
         row = cur.fetchone()
         return row[0] if row else ""
 
 
+def remove_participant(user_id: int):
+    """Удаляет участника и чистит жеребьёвку, где он фигурирует."""
+    with db() as conn:
+        conn.execute("DELETE FROM participants WHERE user_id=?", (user_id,))
+        conn.execute(
+            "DELETE FROM assignments WHERE giver_id=? OR receiver_id=?",
+            (user_id, user_id)
+        )
+
+
 # ---------- UI ----------
 BTN_JOIN = "✅ Участвовать"
+BTN_LEAVE = "❌ Выйти из участия"
 BTN_WISH = "📝 Пожелание"
 BTN_MY_WISH = "👀 Моё пожелание"
 BTN_HELP = "ℹ️ Помощь"
@@ -108,7 +124,7 @@ def is_admin(user_id: int) -> bool:
 
 def main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     rows = [
-        [KeyboardButton(text=BTN_JOIN)],
+        [KeyboardButton(text=BTN_JOIN), KeyboardButton(text=BTN_LEAVE)],
         [KeyboardButton(text=BTN_WISH), KeyboardButton(text=BTN_MY_WISH)],
         [KeyboardButton(text=BTN_HELP)],
     ]
@@ -132,7 +148,9 @@ async def start(message: types.Message):
     await message.answer(
         "🎅 Тайный Санта\n\n"
         "Жми кнопки ниже.\n"
-        "Если хочешь участвовать — нажми «Участвовать».",
+        "✅ «Участвовать» — добавиться.\n"
+        "❌ «Выйти из участия» — удалиться.\n"
+        "📝 «Пожелание» — написать, что хочешь.",
         reply_markup=main_keyboard(message.from_user.id)
     )
 
@@ -153,6 +171,12 @@ async def join_btn(message: types.Message):
     await message.answer("✅ Ты в списке участников!", reply_markup=main_keyboard(message.from_user.id))
 
 
+@dp.message(F.text == BTN_LEAVE)
+async def leave_btn(message: types.Message):
+    remove_participant(message.from_user.id)
+    await message.answer("❌ Ок, ты больше не участвуешь.", reply_markup=main_keyboard(message.from_user.id))
+
+
 @dp.message(F.text == BTN_MY_WISH)
 async def my_wish_btn(message: types.Message):
     w = get_wish(message.from_user.id)
@@ -164,7 +188,7 @@ async def my_wish_btn(message: types.Message):
 
 @dp.message(F.text == BTN_WISH)
 async def wish_btn(message: types.Message, state: FSMContext):
-    # автодобавим в участников, если ещё не добавлен
+    # автоматически добавим в участников, если ещё не добавлен
     upsert_participant(message.from_user.id, message.from_user.full_name)
     await state.set_state(WishFlow.waiting_wish_text)
     await message.answer("Ок. Напиши ОДНИМ сообщением своё пожелание (что любишь/что не надо/лимит и т.п.).")
@@ -173,6 +197,7 @@ async def wish_btn(message: types.Message, state: FSMContext):
 @dp.message(WishFlow.waiting_wish_text, F.text)
 async def wish_text(message: types.Message, state: FSMContext):
     text = message.text.strip()
+
     if len(text) < 2:
         await message.answer("Слишком коротко. Напиши нормально одним сообщением 🙂")
         return
@@ -198,7 +223,7 @@ async def admin_participants(message: types.Message):
 
     lines = ["👥 Участники:"]
     for i, (uid, name, wish) in enumerate(ppl, start=1):
-        lines.append(f"{i}. {name} (id: {uid})" + (f" — 📝 есть пожелание" if wish else ""))
+        lines.append(f"{i}. {name} (id: {uid})" + (" — 📝 есть пожелание" if wish else ""))
     await message.answer("\n".join(lines))
 
 
@@ -227,8 +252,8 @@ async def admin_draw(message: types.Message):
     pairs = {giver: receiver for giver, receiver in zip(users, shuffled)}
     save_assignments(pairs)
 
-    # рассылаем каждому
     names = {uid: name for uid, name, _ in ppl}
+
     for giver, receiver in pairs.items():
         receiver_wish = get_wish(receiver)
         text = f"🎁 Ты Тайный Санта для: {names.get(receiver, receiver)}"
@@ -251,6 +276,7 @@ async def admin_results(message: types.Message):
 
     ppl = get_participants()
     names = {uid: name for uid, name, _ in ppl}
+
     lines = ["📋 Результаты (кто кому дарит):"]
     for giver, receiver in pairs.items():
         lines.append(f"• {names.get(giver, giver)} → {names.get(receiver, receiver)}")
