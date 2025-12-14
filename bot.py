@@ -5,7 +5,10 @@ import random
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 
@@ -137,6 +140,33 @@ def main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, selective=True)
 
 
+def participants_text_and_keyboard() -> tuple[str, InlineKeyboardMarkup]:
+    ppl = get_participants()
+
+    if not ppl:
+        text = "Пока нет участников."
+        kb = InlineKeyboardMarkup(inline_keyboard=[])
+        return text, kb
+
+    lines = ["👥 Участники (нажми ❌ чтобы удалить):"]
+    buttons: list[list[InlineKeyboardButton]] = []
+
+    for i, (uid, name, wish) in enumerate(ppl, start=1):
+        lines.append(f"{i}. {name} (id: {uid})" + (" — 📝" if wish else ""))
+        # кнопка удаления на отдельной строке (красиво и не ломает разметку)
+        buttons.append([InlineKeyboardButton(text=f"❌ Удалить: {name}", callback_data=f"del:{uid}")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    return "\n".join(lines), kb
+
+
+def confirm_delete_keyboard(uid: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Сбросить жеребьёвку и удалить", callback_data=f"del_reset:{uid}")],
+        [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="del_back")],
+    ])
+
+
 # ---------- FSM ----------
 class WishFlow(StatesGroup):
     waiting_wish_text = State()
@@ -188,7 +218,6 @@ async def my_wish_btn(message: types.Message):
 
 @dp.message(F.text == BTN_WISH)
 async def wish_btn(message: types.Message, state: FSMContext):
-    # автоматически добавим в участников, если ещё не добавлен
     upsert_participant(message.from_user.id, message.from_user.full_name)
     await state.set_state(WishFlow.waiting_wish_text)
     await message.answer("Ок. Напиши ОДНИМ сообщением своё пожелание (что любишь/что не надо/лимит и т.п.).")
@@ -216,15 +245,68 @@ async def admin_participants(message: types.Message):
     if not is_admin(message.from_user.id):
         return
 
-    ppl = get_participants()
-    if not ppl:
-        await message.answer("Пока нет участников.")
+    text, kb = participants_text_and_keyboard()
+    await message.answer(text, reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("del:"))
+async def cb_delete_participant(query: types.CallbackQuery):
+    if not is_admin(query.from_user.id):
+        await query.answer("Только для админа.", show_alert=True)
         return
 
-    lines = ["👥 Участники:"]
-    for i, (uid, name, wish) in enumerate(ppl, start=1):
-        lines.append(f"{i}. {name} (id: {uid})" + (" — 📝 есть пожелание" if wish else ""))
-    await message.answer("\n".join(lines))
+    uid = int(query.data.split(":", 1)[1])
+    has_draw = bool(get_assignments())
+
+    if not has_draw:
+        remove_participant(uid)
+        text, kb = participants_text_and_keyboard()
+        await query.message.edit_text(text, reply_markup=kb)
+        await query.answer("Удалено.")
+        return
+
+    # жеребьёвка уже есть — только предложить сброс
+    ppl = {u: n for u, n, _ in get_participants()}
+    name = ppl.get(uid, str(uid))
+    await query.message.edit_text(
+        f"⚠️ Жеребьёвка уже проведена.\n\n"
+        f"Чтобы удалить участника **{name}**, нужно сбросить жеребьёвку.\n"
+        f"Сбросить и удалить?",
+        reply_markup=confirm_delete_keyboard(uid),
+        parse_mode="Markdown"
+    )
+    await query.answer()
+
+
+@dp.callback_query(F.data.startswith("del_reset:"))
+async def cb_delete_with_reset(query: types.CallbackQuery):
+    if not is_admin(query.from_user.id):
+        await query.answer("Только для админа.", show_alert=True)
+        return
+
+    uid = int(query.data.split(":", 1)[1])
+
+    # сбрасываем жеребьёвку только по твоему явному нажатию
+    clear_assignments()
+    remove_participant(uid)
+
+    text, kb = participants_text_and_keyboard()
+    await query.message.edit_text(
+        "🔄 Жеребьёвка сброшена и участник удалён.\n\n" + text,
+        reply_markup=kb
+    )
+    await query.answer("Сброшено и удалено.")
+
+
+@dp.callback_query(F.data == "del_back")
+async def cb_back_to_list(query: types.CallbackQuery):
+    if not is_admin(query.from_user.id):
+        await query.answer("Только для админа.", show_alert=True)
+        return
+
+    text, kb = participants_text_and_keyboard()
+    await query.message.edit_text(text, reply_markup=kb)
+    await query.answer()
 
 
 @dp.message(F.text == BTN_ADMIN_DRAW)
