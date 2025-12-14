@@ -3,8 +3,15 @@ import random
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 import os
-...
+import asyncio
+import random
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+
 TOKEN = os.getenv("BOT_TOKEN")
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -53,4 +60,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
