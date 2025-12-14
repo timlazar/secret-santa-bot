@@ -11,6 +11,10 @@ dp = Dispatcher()
 
 participants = {}
 
+@dp.message(Command("myid"))
+async def myid(message: types.Message):
+    await message.answer(f"Твой Telegram ID: {message.from_user.id}")
+
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
@@ -53,3 +57,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
